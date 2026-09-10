@@ -7,558 +7,159 @@ from pypdf import PdfReader
 from dotenv import load_dotenv
 
 
-# =========================================================
-# ENVIRONMENT + API SETUP
-# =========================================================
+# ==========================================
+# SETUP
+# ==========================================
 
 load_dotenv()
 
-api_key = os.getenv("OPENAI_API_KEY")
-
-# This lets the same project work on Streamlit Cloud later
-if not api_key:
-    try:
-        api_key = st.secrets["OPENAI_API_KEY"]
-    except Exception:
-        api_key = None
-
+client = OpenAI(
+    api_key=os.getenv("OPENAI_API_KEY")
+)
 
 st.set_page_config(
     page_title="AI Study Assistant",
     page_icon="📚",
-    layout="wide",
-    initial_sidebar_state="expanded"
+    layout="wide"
+)
+
+st.title("📚 AI Study Assistant")
+st.write(
+    "Your AI-powered study companion for questions, "
+    "documents, summaries, quizzes, and flashcards."
 )
 
 
-# =========================================================
-# CUSTOM UI
-# =========================================================
-
-st.markdown(
-    """
-    <style>
-
-    .main-title {
-        font-size: 42px;
-        font-weight: 800;
-        margin-bottom: 0px;
-    }
-
-    .subtitle {
-        font-size: 18px;
-        opacity: 0.75;
-        margin-bottom: 25px;
-    }
-
-    .feature-card {
-        padding: 18px;
-        border-radius: 14px;
-        border: 1px solid rgba(128,128,128,0.25);
-        margin-bottom: 12px;
-    }
-
-    .small-text {
-        opacity: 0.7;
-        font-size: 14px;
-    }
-
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
-
-st.markdown(
-    '<div class="main-title">📚 AI Study Assistant</div>',
-    unsafe_allow_html=True
-)
-
-st.markdown(
-    """
-    <div class="subtitle">
-    Learn with an AI tutor, study multiple PDFs,
-    generate quizzes and flashcards, and track your progress.
-    </div>
-    """,
-    unsafe_allow_html=True
-)
-
-
-if not api_key:
-    st.error(
-        "OpenAI API key was not found. "
-        "Add OPENAI_API_KEY to your .env file "
-        "or Streamlit secrets."
-    )
-
-    st.stop()
-
-
-client = OpenAI(api_key=api_key)
-
-
-# =========================================================
+# ==========================================
 # SESSION STATE
-# =========================================================
+# ==========================================
 
-defaults = {
+if "general_messages" not in st.session_state:
+    st.session_state.general_messages = []
 
-    # General Tutor
-    "general_messages": [],
+if "pdf_messages" not in st.session_state:
+    st.session_state.pdf_messages = []
 
-    # PDF Chat
-    "pdf_messages": [],
+if "chunks" not in st.session_state:
+    st.session_state.chunks = []
 
-    # Documents
-    "chunks": [],
-    "embeddings": [],
-    "current_files": None,
+if "embeddings" not in st.session_state:
+    st.session_state.embeddings = []
 
-    # Quiz
-    "quiz_questions": [],
-    "quiz_index": 0,
-    "quiz_score": 0,
-    "quiz_answered": False,
-    "quiz_recorded": False,
+if "current_file" not in st.session_state:
+    st.session_state.current_file = None
 
-    # Flashcards
-    "flashcards": [],
-    "flashcard_index": 0,
-    "show_flashcard_answer": False,
+if "quiz_questions" not in st.session_state:
+    st.session_state.quiz_questions = []
 
-    # Generated study content
-    "summary_text": "",
+if "quiz_index" not in st.session_state:
+    st.session_state.quiz_index = 0
 
-    # Progress
-    "total_quizzes": 0,
-    "total_questions": 0,
-    "correct_answers": 0,
-    "mistakes": [],
+if "quiz_score" not in st.session_state:
+    st.session_state.quiz_score = 0
 
-    # Extra mistake explanations
-    "mistake_explanations": {}
-}
+if "quiz_answered" not in st.session_state:
+    st.session_state.quiz_answered = False
 
+if "flashcards" not in st.session_state:
+    st.session_state.flashcards = []
 
-for key, value in defaults.items():
+if "flashcard_index" not in st.session_state:
+    st.session_state.flashcard_index = 0
 
-    if key not in st.session_state:
+if "show_flashcard_answer" not in st.session_state:
+    st.session_state.show_flashcard_answer = False
 
-        st.session_state[key] = value
 
+# ==========================================
+# RAG FUNCTIONS
+# ==========================================
 
-# =========================================================
-# SIDEBAR - STUDY SETTINGS
-# =========================================================
-
-with st.sidebar:
-
-    st.title("⚙️ Study Settings")
-
-    difficulty = st.selectbox(
-        "Difficulty",
-        [
-            "Easy",
-            "Medium",
-            "Hard"
-        ]
-    )
-
-    quiz_count = st.selectbox(
-        "Quiz questions",
-        [
-            5,
-            10,
-            15
-        ]
-    )
-
-    flashcard_count = st.selectbox(
-        "Flashcards",
-        [
-            5,
-            10,
-            15,
-            20
-        ],
-        index=1
-    )
-
-    explanation_mode = st.selectbox(
-        "Explanation style",
-        [
-            "Normal",
-            "Explain Simply",
-            "Detailed Explanation",
-            "Give Example",
-            "Exam Answer"
-        ]
-    )
-
-    st.divider()
-
-    st.subheader("📊 Progress")
-
-    total_questions = st.session_state.total_questions
-    correct = st.session_state.correct_answers
-
-    if total_questions > 0:
-
-        accuracy = round(
-            (correct / total_questions) * 100
-        )
-
-    else:
-
-        accuracy = 0
-
-
-    st.metric(
-        "Quizzes Completed",
-        st.session_state.total_quizzes
-    )
-
-    st.metric(
-        "Questions Answered",
-        total_questions
-    )
-
-    st.metric(
-        "Accuracy",
-        f"{accuracy}%"
-    )
-
-    st.metric(
-        "Mistakes to Review",
-        len(st.session_state.mistakes)
-    )
-
-    st.divider()
-
-    st.caption(
-        "Built with Python, Streamlit, "
-        "OpenAI API, embeddings, and RAG."
-    )
-
-
-# =========================================================
-# HELPER FUNCTIONS
-# =========================================================
-
-def call_ai(prompt):
-
-    try:
-
-        response = client.responses.create(
-            model="gpt-5.6-luna",
-            input=prompt
-        )
-
-        return response.output_text
-
-
-    except Exception as error:
-
-        st.error(
-            f"AI request failed: {error}"
-        )
-
-        return None
-
-
-# ---------------------------------------------------------
-# SAFE JSON PARSER
-# ---------------------------------------------------------
-
-def parse_json_response(text):
-
-    if not text:
-        return None
-
-    cleaned = text.strip()
-
-    if cleaned.startswith("```"):
-
-        cleaned = cleaned.replace(
-            "```json",
-            ""
-        )
-
-        cleaned = cleaned.replace(
-            "```",
-            ""
-        )
-
-        cleaned = cleaned.strip()
-
-
-    start = cleaned.find("[")
-    end = cleaned.rfind("]")
-
-
-    if start != -1 and end != -1:
-
-        cleaned = cleaned[
-            start:end + 1
-        ]
-
-
-    try:
-
-        return json.loads(cleaned)
-
-    except json.JSONDecodeError:
-
-        return None
-
-
-# =========================================================
-# PDF CHUNKING
-# =========================================================
-
-def create_chunks(uploaded_files):
+def create_chunks(reader):
 
     chunks = []
 
-    unreadable_files = []
+    for page_number, page in enumerate(reader.pages, start=1):
 
+        text = page.extract_text()
 
-    for uploaded_file in uploaded_files:
+        if not text:
+            continue
 
-        try:
+        chunk_size = 1200
+        overlap = 200
 
-            uploaded_file.seek(0)
+        start = 0
 
-            reader = PdfReader(
-                uploaded_file
-            )
+        while start < len(text):
 
-            readable_text_found = False
+            end = start + chunk_size
 
+            chunk_text = text[start:end]
 
-            for page_number, page in enumerate(
-                reader.pages,
-                start=1
-            ):
+            chunks.append({
+                "text": chunk_text,
+                "page": page_number
+            })
 
-                try:
+            start += chunk_size - overlap
 
-                    text = page.extract_text()
+    return chunks
 
-                except Exception:
-
-                    text = None
-
-
-                if not text:
-                    continue
-
-
-                text = text.strip()
-
-
-                if not text:
-                    continue
-
-
-                readable_text_found = True
-
-
-                chunk_size = 1200
-                overlap = 200
-
-                start = 0
-
-
-                while start < len(text):
-
-                    end = start + chunk_size
-
-                    chunk_text = text[
-                        start:end
-                    ]
-
-
-                    chunks.append({
-
-                        "text": chunk_text,
-
-                        "page": page_number,
-
-                        "file": uploaded_file.name
-
-                    })
-
-
-                    start += (
-                        chunk_size - overlap
-                    )
-
-
-            if not readable_text_found:
-
-                unreadable_files.append(
-                    uploaded_file.name
-                )
-
-
-        except Exception:
-
-            unreadable_files.append(
-                uploaded_file.name
-            )
-
-
-    return chunks, unreadable_files
-
-
-# =========================================================
-# EMBEDDINGS
-# =========================================================
 
 def create_embeddings(chunks):
 
-    all_embeddings = []
+    texts = [
+        chunk["text"]
+        for chunk in chunks
+    ]
 
-    batch_size = 100
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=texts
+    )
 
-
-    for start in range(
-        0,
-        len(chunks),
-        batch_size
-    ):
-
-        batch = chunks[
-            start:start + batch_size
-        ]
-
-
-        texts = [
-            chunk["text"]
-            for chunk in batch
-        ]
+    return [
+        item.embedding
+        for item in response.data
+    ]
 
 
-        try:
-
-            response = client.embeddings.create(
-                model="text-embedding-3-small",
-                input=texts
-            )
-
-
-            embeddings = [
-                item.embedding
-                for item in response.data
-            ]
-
-
-            all_embeddings.extend(
-                embeddings
-            )
-
-
-        except Exception as error:
-
-            st.error(
-                f"Could not create document embeddings: {error}"
-            )
-
-            return []
-
-
-    return all_embeddings
-
-
-# =========================================================
-# COSINE SIMILARITY
-# =========================================================
-
-def cosine_similarity(
-    vector1,
-    vector2
-):
+def cosine_similarity(vector1, vector2):
 
     dot_product = sum(
         a * b
-        for a, b in zip(
-            vector1,
-            vector2
-        )
+        for a, b in zip(vector1, vector2)
     )
-
 
     magnitude1 = math.sqrt(
-        sum(
-            a * a
-            for a in vector1
-        )
+        sum(a * a for a in vector1)
     )
-
 
     magnitude2 = math.sqrt(
-        sum(
-            b * b
-            for b in vector2
-        )
+        sum(b * b for b in vector2)
+    )
+
+    if magnitude1 == 0 or magnitude2 == 0:
+        return 0
+
+    return dot_product / (
+        magnitude1 * magnitude2
     )
 
 
-    if magnitude1 == 0:
-        return 0
+def retrieve_relevant_chunks(question, top_k=4):
 
-
-    if magnitude2 == 0:
-        return 0
-
-
-    return (
-        dot_product
-        /
-        (magnitude1 * magnitude2)
-    )
-
-
-# =========================================================
-# RETRIEVAL
-# =========================================================
-
-def retrieve_relevant_chunks(
-    question,
-    top_k=6
-):
-
-    if not st.session_state.embeddings:
-
-        return []
-
-
-    try:
-
-        response = client.embeddings.create(
+    question_embedding = (
+        client.embeddings.create(
             model="text-embedding-3-small",
             input=question
         )
-
-
-        question_embedding = (
-            response.data[0].embedding
-        )
-
-
-    except Exception as error:
-
-        st.error(
-            f"Could not search the documents: {error}"
-        )
-
-        return []
-
+        .data[0]
+        .embedding
+    )
 
     scores = []
-
 
     for index, embedding in enumerate(
         st.session_state.embeddings
@@ -569,138 +170,40 @@ def retrieve_relevant_chunks(
             embedding
         )
 
-
         scores.append(
-            (
-                score,
-                index
-            )
+            (score, index)
         )
 
-
-    scores.sort(
-        reverse=True
-    )
-
+    scores.sort(reverse=True)
 
     best_chunks = []
 
-
-    for score, index in scores[
-        :top_k
-    ]:
+    for score, index in scores[:top_k]:
 
         best_chunks.append(
-            st.session_state.chunks[
-                index
-            ]
+            st.session_state.chunks[index]
         )
-
 
     return best_chunks
 
 
-# =========================================================
-# EXPLANATION MODE
-# =========================================================
+def ask_pdf(question):
 
-def explanation_instruction(mode):
-
-    if mode == "Explain Simply":
-
-        return """
-Explain the answer using very simple,
-beginner-friendly language.
-Avoid unnecessary technical jargon.
-"""
-
-
-    if mode == "Detailed Explanation":
-
-        return """
-Give a detailed explanation.
-Explain the reasoning and important concepts
-step-by-step.
-"""
-
-
-    if mode == "Give Example":
-
-        return """
-Explain the answer and include at least
-one useful example.
-"""
-
-
-    if mode == "Exam Answer":
-
-        return """
-Answer like a strong college exam response.
-Be concise, accurate, organized, and include
-the key points a professor would expect.
-"""
-
-
-    return """
-Explain clearly at a college-student level.
-"""
-
-
-# =========================================================
-# DOCUMENT Q&A WITH INLINE CITATIONS
-# =========================================================
-
-def ask_pdf(
-    question,
-    mode
-):
-
-    relevant_chunks = (
-        retrieve_relevant_chunks(
-            question
-        )
-    )
-
-
-    if not relevant_chunks:
-
-        return (
-            "I couldn't retrieve information "
-            "from the uploaded documents.",
-            []
-        )
-
+    relevant_chunks = retrieve_relevant_chunks(question)
 
     context = ""
-
-    source_labels = []
-
+    pages = []
 
     for chunk in relevant_chunks:
 
-        citation = (
-            f"[{chunk['file']}, "
-            f"p. {chunk['page']}]"
+        context += (
+            f"\n--- Page {chunk['page']} ---\n"
+            f"{chunk['text']}\n"
         )
 
-
-        source_labels.append(
-            citation
+        pages.append(
+            chunk["page"]
         )
-
-
-        context += f"""
-SOURCE: {citation}
-
-{chunk["text"]}
-
-"""
-
-
-    instruction = (
-        explanation_instruction(mode)
-    )
-
 
     prompt = f"""
 You are an AI Study Assistant.
@@ -708,31 +211,11 @@ You are an AI Study Assistant.
 Answer the student's question using ONLY
 the provided study material.
 
-{instruction}
+If the answer cannot be found in the material,
+say that you could not find enough information
+in the uploaded document.
 
-IMPORTANT CITATION RULES:
-
-Every important statement based on the
-documents should include the relevant citation.
-
-Use citations exactly like:
-
-[Lecture1.pdf, p. 4]
-
-or
-
-[Chapter2.pdf, p. 17]
-
-Do not invent page numbers.
-
-If information comes from multiple sources,
-you may cite multiple sources.
-
-If the answer is not supported by the provided
-material, clearly say:
-
-"I could not find enough information in the
-uploaded documents."
+Explain the answer clearly and simply.
 
 STUDY MATERIAL:
 
@@ -743,1096 +226,623 @@ STUDENT QUESTION:
 {question}
 """
 
-
-    answer = call_ai(
-        prompt
+    response = client.responses.create(
+        model="gpt-5.6-luna",
+        input=prompt
     )
-
-
-    if not answer:
-
-        answer = (
-            "The AI could not generate "
-            "an answer."
-        )
-
 
     return (
-        answer,
-        list(dict.fromkeys(
-            source_labels
-        ))
+        response.output_text,
+        sorted(set(pages))
     )
 
 
-# =========================================================
-# MATERIAL FOR SUMMARY / QUIZ / FLASHCARDS
-# =========================================================
+# ==========================================
+# MAIN TABS
+# ==========================================
 
-def build_study_material(
-    max_characters=60000
-):
-
-    if not st.session_state.chunks:
-
-        return ""
+tutor_tab, pdf_tab = st.tabs([
+    "💬 AI Tutor",
+    "📄 Study My PDF"
+])
 
 
-    material = ""
-
-    used = 0
-
-
-    for chunk in st.session_state.chunks:
-
-        section = (
-            f"\nSOURCE: "
-            f"[{chunk['file']}, "
-            f"p. {chunk['page']}]\n"
-            f"{chunk['text']}\n"
-        )
-
-
-        if (
-            used + len(section)
-            > max_characters
-        ):
-
-            break
-
-
-        material += section
-
-        used += len(section)
-
-
-    return material
-
-
-# =========================================================
-# DOWNLOAD BUILDERS
-# =========================================================
-
-def build_quiz_download():
-
-    text = "AI Study Assistant - Quiz\n\n"
-
-
-    for index, question in enumerate(
-        st.session_state.quiz_questions,
-        start=1
-    ):
-
-        text += (
-            f"Question {index}\n"
-            f"{question.get('question', '')}\n\n"
-        )
-
-
-        for option in question.get(
-            "options",
-            []
-        ):
-
-            text += (
-                f"- {option}\n"
-            )
-
-
-        text += (
-            "\nCorrect Answer: "
-            f"{question.get('answer', '')}\n"
-        )
-
-
-        text += (
-            "Explanation: "
-            f"{question.get('explanation', '')}\n"
-        )
-
-
-        text += "\n--------------------\n\n"
-
-
-    return text
-
-
-def build_flashcard_download():
-
-    text = (
-        "AI Study Assistant - Flashcards\n\n"
-    )
-
-
-    for index, card in enumerate(
-        st.session_state.flashcards,
-        start=1
-    ):
-
-        text += (
-            f"Flashcard {index}\n"
-        )
-
-
-        text += (
-            f"Question: "
-            f"{card.get('question', '')}\n"
-        )
-
-
-        text += (
-            f"Answer: "
-            f"{card.get('answer', '')}\n\n"
-        )
-
-
-    return text
-
-
-# =========================================================
-# MAIN NAVIGATION
-# =========================================================
-
-tutor_tab, pdf_tab, progress_tab, about_tab = (
-    st.tabs(
-        [
-            "💬 AI Tutor",
-            "📚 Study Documents",
-            "📊 Progress",
-            "ℹ️ About"
-        ]
-    )
-)
-
-
-# =========================================================
+# ==========================================
 # AI TUTOR
-# =========================================================
+# ==========================================
 
 with tutor_tab:
 
-    st.header(
-        "💬 AI Tutor"
-    )
+    st.header("💬 AI Tutor")
 
     st.write(
-        "Ask questions without uploading "
-        "any documents."
+        "Ask anything about programming, computer science, "
+        "math, or other subjects."
     )
 
-
-    col1, col2 = st.columns(
-        [4, 1]
-    )
-
-
-    with col2:
-
-        if st.button(
-            "🗑️ Clear Chat",
-            use_container_width=True,
-            key="clear_general"
-        ):
-
-            st.session_state.general_messages = []
-
-            st.rerun()
-
-
-    for message in (
-        st.session_state.general_messages
+    if st.button(
+        "Clear Tutor Chat",
+        key="clear_tutor"
     ):
+
+        st.session_state.general_messages = []
+
+        st.rerun()
+
+
+    # Display previous messages
+
+    for message in st.session_state.general_messages:
 
         with st.chat_message(
             message["role"]
         ):
 
-            st.markdown(
+            st.write(
                 message["content"]
             )
 
 
     tutor_question = st.chat_input(
         "Ask your AI Tutor anything...",
-        key="general_chat"
+        key="tutor_input"
     )
 
 
     if tutor_question:
 
-        st.session_state.general_messages.append(
-            {
-                "role": "user",
-                "content": tutor_question
-            }
-        )
+        st.session_state.general_messages.append({
+            "role": "user",
+            "content": tutor_question
+        })
 
 
         with st.chat_message("user"):
 
-            st.markdown(
+            st.write(
                 tutor_question
             )
 
 
         conversation = ""
 
-
-        for message in (
-            st.session_state.general_messages[
-                -10:
-            ]
-        ):
+        for message in st.session_state.general_messages[-10:]:
 
             conversation += (
                 f"{message['role']}: "
-                f"{message['content']}\n\n"
+                f"{message['content']}\n"
             )
-
-
-        instruction = (
-            explanation_instruction(
-                explanation_mode
-            )
-        )
 
 
         prompt = f"""
-You are an AI Tutor for a college student.
+You are a helpful AI Tutor for a college student.
 
-{instruction}
+Explain concepts clearly and step-by-step.
 
-For programming questions:
-
-- explain code clearly
-- use beginner-friendly examples
-- explain important lines when useful
-- do not unnecessarily overcomplicate the answer
+For programming questions, use beginner-friendly
+language and examples when useful.
 
 Conversation:
 
 {conversation}
 
-Answer the student's latest message.
+Respond to the student's latest message.
 """
 
 
-        with st.chat_message(
-            "assistant"
-        ):
+        with st.chat_message("assistant"):
 
-            with st.spinner(
-                "Thinking..."
-            ):
+            with st.spinner("Thinking..."):
 
-                answer = call_ai(
-                    prompt
+                response = client.responses.create(
+                    model="gpt-5.6-luna",
+                    input=prompt
                 )
 
-
-            if answer:
-
-                st.markdown(
-                    answer
-                )
+                answer = response.output_text
 
 
-                st.session_state.general_messages.append(
-                    {
-                        "role": "assistant",
-                        "content": answer
-                    }
-                )
+            st.write(answer)
 
 
-# =========================================================
-# STUDY DOCUMENTS
-# =========================================================
+        st.session_state.general_messages.append({
+            "role": "assistant",
+            "content": answer
+        })
+
+
+# ==========================================
+# PDF STUDY MODE
+# ==========================================
 
 with pdf_tab:
 
-    st.header(
-        "📚 Study Your Documents"
-    )
+    st.header("📄 Study My PDF")
 
     st.write(
-        "Upload lecture slides, textbook chapters, "
-        "study guides, or notes together."
+        "Upload your notes, slides, readings, "
+        "or textbook chapters and study them with AI."
     )
 
 
-    uploaded_files = st.file_uploader(
-        "Upload PDF documents",
-        type=["pdf"],
-        accept_multiple_files=True,
-        help="You can upload multiple PDF files."
+    uploaded_file = st.file_uploader(
+        "Upload your study PDF",
+        type=["pdf"]
     )
 
 
-    # -----------------------------------------------------
-    # PROCESS FILES
-    # -----------------------------------------------------
+    if uploaded_file is not None:
 
-    if uploaded_files:
-
-        file_signature = tuple(
-            (
-                file.name,
-                file.size
-            )
-            for file in uploaded_files
-        )
-
-
+        # PROCESS NEW PDF
         if (
-            st.session_state.current_files
-            != file_signature
+            st.session_state.current_file
+            != uploaded_file.name
         ):
 
+            reader = PdfReader(uploaded_file)
+
+
             with st.spinner(
-                "Reading and indexing your documents..."
+                "Reading and analyzing your PDF..."
             ):
 
-                chunks, unreadable = (
-                    create_chunks(
-                        uploaded_files
-                    )
-                )
+                chunks = create_chunks(reader)
 
 
-                if not chunks:
+                if len(chunks) == 0:
 
                     st.error(
-                        "No readable text was found. "
-                        "The PDFs may be scanned images "
-                        "or corrupted."
+                        "I couldn't extract readable "
+                        "text from this PDF."
                     )
 
                     st.stop()
 
 
-                embeddings = (
-                    create_embeddings(
-                        chunks
-                    )
-                )
-
-
-                if not embeddings:
-
-                    st.stop()
-
-
-                st.session_state.chunks = (
+                embeddings = create_embeddings(
                     chunks
                 )
 
-                st.session_state.embeddings = (
-                    embeddings
+
+                st.session_state.chunks = chunks
+                st.session_state.embeddings = embeddings
+
+                st.session_state.current_file = (
+                    uploaded_file.name
                 )
 
-                st.session_state.current_files = (
-                    file_signature
-                )
-
-
-                # Reset document-specific content
                 st.session_state.pdf_messages = []
 
                 st.session_state.quiz_questions = []
-
                 st.session_state.quiz_index = 0
-
                 st.session_state.quiz_score = 0
-
                 st.session_state.quiz_answered = False
 
-                st.session_state.quiz_recorded = False
-
                 st.session_state.flashcards = []
-
                 st.session_state.flashcard_index = 0
-
                 st.session_state.show_flashcard_answer = False
-
-                st.session_state.summary_text = ""
 
 
             st.success(
-                "Documents indexed successfully!"
+                "PDF processed successfully!"
             )
 
 
-            if unreadable:
-
-                st.warning(
-                    "Some PDFs contained little or no "
-                    "extractable text: "
-                    + ", ".join(unreadable)
-                )
-
-
-        # -------------------------------------------------
-        # DOCUMENT INFORMATION
-        # -------------------------------------------------
-
-        st.subheader(
-            "📄 Loaded Documents"
+        st.info(
+            f"📖 Currently studying: "
+            f"{uploaded_file.name}"
         )
 
 
-        for file in uploaded_files:
-
-            st.write(
-                f"• {file.name}"
-            )
-
-
-        st.caption(
-            f"{len(uploaded_files)} document(s) | "
-            f"{len(st.session_state.chunks)} searchable sections"
-        )
-
-
-        # -------------------------------------------------
-        # PDF CHAT
-        # -------------------------------------------------
-
-        st.divider()
-
-        st.subheader(
-            "🔎 Ask Your Documents"
-        )
-
-
-        clear_col, info_col = st.columns(
-            [1, 4]
-        )
-
-
-        with clear_col:
-
-            if st.button(
-                "🗑️ Clear Chat",
-                key="clear_document_chat",
-                use_container_width=True
-            ):
-
-                st.session_state.pdf_messages = []
-
-                st.rerun()
-
-
-        for message in (
-            st.session_state.pdf_messages
+        if st.button(
+            "Clear PDF Chat",
+            key="clear_pdf"
         ):
+
+            st.session_state.pdf_messages = []
+
+            st.rerun()
+
+
+        # DISPLAY PDF CHAT HISTORY
+        for message in st.session_state.pdf_messages:
 
             with st.chat_message(
                 message["role"]
             ):
 
-                st.markdown(
+                st.write(
                     message["content"]
                 )
 
 
-                if message.get("sources"):
+                if "pages" in message:
 
-                    with st.expander(
-                        "📍 Retrieved Sources"
-                    ):
-
-                        for source in (
-                            message["sources"]
-                        ):
-
-                            st.write(
-                                source
-                            )
+                    st.caption(
+                        "Relevant PDF pages: "
+                        + ", ".join(
+                            str(page)
+                            for page in message["pages"]
+                        )
+                    )
 
 
+        # PDF CHAT INPUT
         pdf_question = st.chat_input(
-            "Ask something about your documents...",
-            key="pdf_chat"
+            "Ask something about your PDF...",
+            key="pdf_input"
         )
 
 
         if pdf_question:
 
-            st.session_state.pdf_messages.append(
-                {
-                    "role": "user",
-                    "content": pdf_question
-                }
-            )
+            st.session_state.pdf_messages.append({
+                "role": "user",
+                "content": pdf_question
+            })
 
 
-            with st.chat_message(
-                "user"
-            ):
+            with st.chat_message("user"):
 
-                st.markdown(
+                st.write(
                     pdf_question
                 )
 
 
-            with st.chat_message(
-                "assistant"
-            ):
+            with st.chat_message("assistant"):
 
                 with st.spinner(
-                    "Searching your documents..."
+                    "Searching your document..."
                 ):
 
-                    answer, sources = (
-                        ask_pdf(
-                            pdf_question,
-                            explanation_mode
-                        )
+                    answer, pages = ask_pdf(
+                        pdf_question
                     )
 
 
-                st.markdown(
-                    answer
+                st.write(answer)
+
+                st.caption(
+                    "Relevant PDF pages: "
+                    + ", ".join(
+                        str(page)
+                        for page in pages
+                    )
                 )
 
 
-                if sources:
-
-                    with st.expander(
-                        "📍 Retrieved Sources"
-                    ):
-
-                        for source in sources:
-
-                            st.write(
-                                source
-                            )
+            st.session_state.pdf_messages.append({
+                "role": "assistant",
+                "content": answer,
+                "pages": pages
+            })
 
 
-            st.session_state.pdf_messages.append(
-                {
-                    "role": "assistant",
-                    "content": answer,
-                    "sources": sources
-                }
-            )
-
-
-        # =================================================
+        # ==================================
         # STUDY TOOLS
-        # =================================================
+        # ==================================
 
         st.divider()
 
-        st.header(
-            "🧠 Study Tools"
+        st.subheader("🧠 Study Tools")
+
+
+        combined_text = "\n".join(
+            chunk["text"]
+            for chunk in st.session_state.chunks
         )
 
 
-        summary_tab, quiz_tab, flashcards_tab, mistakes_tab = (
-            st.tabs(
-                [
-                    "📝 Summary",
-                    "❓ Quiz",
-                    "🗂️ Flashcards",
-                    "❌ Review Mistakes"
-                ]
-            )
-        )
+        summary_tab, quiz_tab, flashcard_tab = st.tabs([
+            "📝 Summary",
+            "❓ Interactive Quiz",
+            "🗂️ Flashcards"
+        ])
 
 
-        study_material = (
-            build_study_material()
-        )
-
-
-        # =================================================
+        # ==================================
         # SUMMARY
-        # =================================================
+        # ==================================
 
         with summary_tab:
 
-            st.subheader(
-                "📝 AI Study Summary"
-            )
-
-
             st.write(
-                "Create an exam-ready summary "
-                "from your uploaded material."
+                "Generate a study summary "
+                "from your uploaded PDF."
             )
 
 
             if st.button(
-                "✨ Generate Summary",
+                "Generate Summary",
                 use_container_width=True
             ):
 
                 prompt = f"""
-You are an AI Study Assistant.
+Create a clear study summary from the material below.
 
-Create a {difficulty.lower()} level study
-summary from the material below.
-
-Organize the summary with:
+Include:
 
 - Main ideas
 - Important concepts
-- Important definitions
+- Key definitions
 - Important facts
-- Things likely worth remembering for an exam
-- A short final review section
 
-When useful, include the source citation exactly
-as it appears in the material.
+Make it useful for a college student
+preparing for an exam.
 
 STUDY MATERIAL:
 
-{study_material}
+{combined_text}
 """
 
 
                 with st.spinner(
-                    "Creating your summary..."
+                    "Creating your study summary..."
                 ):
 
-                    result = call_ai(
-                        prompt
+                    response = client.responses.create(
+                        model="gpt-5.6-luna",
+                        input=prompt
                     )
 
 
-                if result:
+                st.subheader(
+                    "📝 Study Summary"
+                )
 
-                    st.session_state.summary_text = (
-                        result
-                    )
-
-
-            if (
-                st.session_state.summary_text
-            ):
-
-                st.markdown(
-                    st.session_state.summary_text
+                st.write(
+                    response.output_text
                 )
 
 
-                st.download_button(
-                    "⬇️ Download Summary",
-                    data=st.session_state.summary_text,
-                    file_name="study_summary.txt",
-                    mime="text/plain",
-                    use_container_width=True
-                )
-
-
-        # =================================================
-        # QUIZ
-        # =================================================
+        # ==================================
+        # INTERACTIVE QUIZ
+        # ==================================
 
         with quiz_tab:
 
-            st.subheader(
-                "❓ Interactive Quiz"
+            st.write(
+                "Generate a quiz and test yourself."
             )
 
 
-            st.caption(
-                f"Difficulty: {difficulty} | "
-                f"Questions: {quiz_count}"
-            )
-
-
-            # ---------------------------------------------
-            # CREATE QUIZ
-            # ---------------------------------------------
-
-            if (
-                not st.session_state.quiz_questions
-            ):
+            if not st.session_state.quiz_questions:
 
                 if st.button(
-                    "🎯 Generate Quiz",
+                    "🎯 Start New Quiz",
                     use_container_width=True
                 ):
 
                     prompt = f"""
-Create exactly {quiz_count}
-multiple-choice questions using ONLY
-the study material below.
-
-Difficulty:
-{difficulty}
+Create exactly 5 multiple-choice questions
+from the study material below.
 
 Return ONLY valid JSON.
 
-Use this structure:
+Use this exact structure:
 
 [
     {{
-        "question": "Question text",
+        "question": "Question here",
         "options": [
-            "Answer option 1",
-            "Answer option 2",
-            "Answer option 3",
-            "Answer option 4"
+            "Option A",
+            "Option B",
+            "Option C",
+            "Option D"
         ],
-        "answer": "Exact correct option",
-        "explanation": "Short explanation of why the answer is correct",
-        "topic": "Main concept being tested"
+        "answer": "Option B",
+        "explanation": "Short explanation here"
     }}
 ]
 
-RULES:
+Rules:
 
-- Exactly {quiz_count} questions
-- Exactly 4 options per question
-- Only one correct answer
-- "answer" must exactly match an option
-- Questions must come from the study material
-- Match the requested difficulty
-- Return JSON only
-- No markdown
-- No code fences
+- Create exactly 5 questions.
+- Each question must have exactly 4 options.
+- The answer must exactly match one option.
+- Return JSON only.
+- Do not include markdown.
+- Do not include ```json.
 
 STUDY MATERIAL:
 
-{study_material}
+{combined_text}
 """
 
 
                     with st.spinner(
-                        "Building your quiz..."
+                        "Creating your quiz..."
                     ):
 
-                        result = call_ai(
-                            prompt
+                        response = client.responses.create(
+                            model="gpt-5.6-luna",
+                            input=prompt
                         )
 
 
-                    quiz_data = (
-                        parse_json_response(
-                            result
-                        )
-                    )
+                    try:
 
-
-                    if (
-                        isinstance(
-                            quiz_data,
-                            list
-                        )
-                        and quiz_data
-                    ):
-
-                        st.session_state.quiz_questions = (
-                            quiz_data
+                        quiz_data = json.loads(
+                            response.output_text
                         )
 
+                        st.session_state.quiz_questions = quiz_data
                         st.session_state.quiz_index = 0
-
                         st.session_state.quiz_score = 0
-
                         st.session_state.quiz_answered = False
-
-                        st.session_state.quiz_recorded = False
 
                         st.rerun()
 
 
-                    else:
+                    except json.JSONDecodeError:
 
                         st.error(
-                            "The quiz could not be formatted "
-                            "correctly. Click Generate Quiz "
-                            "and try again."
+                            "The quiz couldn't be created "
+                            "correctly. Try again."
                         )
 
-
-            # ---------------------------------------------
-            # QUIZ EXISTS
-            # ---------------------------------------------
 
             else:
 
-                questions = (
+                total_questions = len(
                     st.session_state.quiz_questions
                 )
 
-                index = (
+                current_index = (
                     st.session_state.quiz_index
                 )
 
-                total = len(
-                    questions
-                )
 
-
-                # =========================================
                 # QUIZ FINISHED
-                # =========================================
-
-                if index >= total:
-
-                    score = (
-                        st.session_state.quiz_score
-                    )
-
-
-                    percentage = round(
-                        (
-                            score
-                            / total
-                        )
-                        * 100
-                    )
-
-
-                    # Record quiz only once
-                    if (
-                        not st.session_state.quiz_recorded
-                    ):
-
-                        st.session_state.total_quizzes += 1
-
-                        st.session_state.quiz_recorded = True
-
+                if current_index >= total_questions:
 
                     st.success(
                         "🎉 Quiz Complete!"
                     )
 
 
-                    score_col, percent_col = (
-                        st.columns(2)
+                    score = (
+                        st.session_state.quiz_score
+                    )
+
+                    percentage = int(
+                        (
+                            score
+                            / total_questions
+                        )
+                        * 100
                     )
 
 
-                    with score_col:
-
-                        st.metric(
-                            "Score",
-                            f"{score}/{total}"
-                        )
-
-
-                    with percent_col:
-
-                        st.metric(
-                            "Accuracy",
-                            f"{percentage}%"
-                        )
-
+                    st.metric(
+                        "Your Score",
+                        f"{score}/{total_questions}"
+                    )
 
                     st.progress(
-                        score / total
+                        score / total_questions
+                    )
+
+                    st.write(
+                        f"### {percentage}%"
                     )
 
 
-                    if percentage >= 90:
+                    if percentage == 100:
 
                         st.success(
-                            "🏆 Excellent work!"
+                            "Perfect score! Excellent work! 🏆"
                         )
 
-                    elif percentage >= 75:
+                    elif percentage >= 80:
 
-                        st.info(
-                            "👏 Good job! Review the "
-                            "questions you missed."
+                        st.success(
+                            "Great job! You understand "
+                            "this material well."
                         )
 
                     elif percentage >= 60:
 
-                        st.warning(
-                            "📖 You're getting there. "
-                            "Review the weaker topics."
+                        st.info(
+                            "Good attempt. Review the "
+                            "questions you missed."
                         )
 
                     else:
 
                         st.warning(
-                            "💪 Review the material "
-                            "and try again."
+                            "Keep studying and try again."
                         )
 
 
-                    st.download_button(
-                        "⬇️ Download Quiz + Answers",
-                        data=build_quiz_download(),
-                        file_name="study_quiz.txt",
-                        mime="text/plain",
-                        use_container_width=True
-                    )
-
-
                     if st.button(
-                        "🔄 Generate Another Quiz",
+                        "🔄 Create Another Quiz",
                         use_container_width=True
                     ):
 
                         st.session_state.quiz_questions = []
-
                         st.session_state.quiz_index = 0
-
                         st.session_state.quiz_score = 0
-
                         st.session_state.quiz_answered = False
-
-                        st.session_state.quiz_recorded = False
 
                         st.rerun()
 
 
-                # =========================================
-                # CURRENT QUESTION
-                # =========================================
-
+                # CURRENT QUIZ QUESTION
                 else:
 
-                    question = questions[
-                        index
-                    ]
+                    question_data = (
+                        st.session_state.quiz_questions[
+                            current_index
+                        ]
+                    )
 
 
                     st.write(
-                        f"### Question {index + 1} "
-                        f"of {total}"
+                        f"### Question "
+                        f"{current_index + 1} "
+                        f"of {total_questions}"
                     )
 
 
                     st.progress(
-                        index / total
+                        current_index
+                        / total_questions
                     )
 
 
-                    if question.get(
-                        "topic"
-                    ):
-
-                        st.caption(
-                            f"Topic: "
-                            f"{question['topic']}"
-                        )
-
-
-                    st.markdown(
-                        f"### {question['question']}"
+                    st.write(
+                        question_data["question"]
                     )
 
 
-                    options = (
-                        question.get(
-                            "options",
-                            []
-                        )
-                    )
-
-
-                    selected = st.radio(
+                    selected_answer = st.radio(
                         "Choose your answer:",
-                        options,
+                        question_data["options"],
                         index=None,
-                        key=f"quiz_answer_{index}"
+                        key=f"quiz_question_{current_index}"
                     )
 
 
-                    # -------------------------------------
-                    # CHECK ANSWER
-                    # -------------------------------------
-
-                    if (
-                        not st.session_state.quiz_answered
-                    ):
+                    if not st.session_state.quiz_answered:
 
                         if st.button(
-                            "✅ Check Answer",
-                            use_container_width=True
+                            "Check Answer",
+                            key="check_quiz_answer"
                         ):
 
-                            if selected is None:
+                            if selected_answer is None:
 
                                 st.warning(
                                     "Choose an answer first."
                                 )
 
-
                             else:
 
-                                correct_answer = (
-                                    question.get(
-                                        "answer"
-                                    )
-                                )
-
-
-                                st.session_state.total_questions += 1
+                                st.session_state.quiz_answered = True
 
 
                                 if (
-                                    selected
-                                    == correct_answer
+                                    selected_answer
+                                    == question_data["answer"]
                                 ):
 
                                     st.session_state.quiz_score += 1
 
-                                    st.session_state.correct_answers += 1
-
-
-                                else:
-
-                                    st.session_state.mistakes.append(
-                                        {
-                                            "question": question.get(
-                                                "question",
-                                                ""
-                                            ),
-
-                                            "your_answer": selected,
-
-                                            "correct_answer": correct_answer,
-
-                                            "explanation": question.get(
-                                                "explanation",
-                                                ""
-                                            ),
-
-                                            "topic": question.get(
-                                                "topic",
-                                                "Unknown topic"
-                                            )
-                                        }
-                                    )
-
-
-                                st.session_state.quiz_answered = True
 
                                 st.rerun()
 
 
-                    # -------------------------------------
-                    # FEEDBACK
-                    # -------------------------------------
-
                     else:
 
-                        correct_answer = (
-                            question.get(
-                                "answer"
-                            )
-                        )
-
-
                         if (
-                            selected
-                            == correct_answer
+                            selected_answer
+                            == question_data["answer"]
                         ):
 
                             st.success(
                                 "✅ Correct!"
                             )
-
 
                         else:
 
@@ -1840,32 +850,22 @@ STUDY MATERIAL:
                                 "❌ Incorrect"
                             )
 
-
                             st.write(
                                 "**Correct answer:** "
-                                f"{correct_answer}"
+                                + question_data["answer"]
                             )
 
 
-                        explanation = (
-                            question.get(
-                                "explanation"
-                            )
+                        st.info(
+                            "💡 "
+                            + question_data["explanation"]
                         )
 
 
-                        if explanation:
-
-                            st.info(
-                                "💡 "
-                                + explanation
-                            )
-
-
                         st.write(
-                            f"Current score: "
-                            f"{st.session_state.quiz_score}/"
-                            f"{index + 1}"
+                            f"Score: "
+                            f"{st.session_state.quiz_score}"
+                            f"/{current_index + 1}"
                         )
 
 
@@ -1875,48 +875,37 @@ STUDY MATERIAL:
                         ):
 
                             st.session_state.quiz_index += 1
-
                             st.session_state.quiz_answered = False
 
                             st.rerun()
 
 
-        # =================================================
-        # FLASHCARDS
-        # =================================================
+        # ==================================
+        # INTERACTIVE FLASHCARDS
+        # ==================================
 
-        with flashcards_tab:
+        with flashcard_tab:
 
-            st.subheader(
-                "🗂️ Interactive Flashcards"
+            st.write(
+                "Study important concepts "
+                "one flashcard at a time."
             )
 
 
-            st.caption(
-                f"Difficulty: {difficulty} | "
-                f"Cards: {flashcard_count}"
-            )
-
-
-            if (
-                not st.session_state.flashcards
-            ):
+            if not st.session_state.flashcards:
 
                 if st.button(
-                    "✨ Generate Flashcards",
+                    "🗂️ Generate Flashcards",
                     use_container_width=True
                 ):
 
                     prompt = f"""
-Create exactly {flashcard_count}
-study flashcards from the material below.
-
-Difficulty:
-{difficulty}
+Create exactly 10 useful study flashcards
+from the study material below.
 
 Return ONLY valid JSON.
 
-Format:
+Use this structure:
 
 [
     {{
@@ -1927,18 +916,16 @@ Format:
 
 Rules:
 
-- Exactly {flashcard_count} flashcards
-- Important concepts only
-- Questions should help with studying
-- Answers should be clear
-- Match the requested difficulty
-- Return JSON only
-- Do not use markdown
-- Do not use code fences
+- Create exactly 10 flashcards.
+- Keep the questions useful for studying.
+- Keep answers clear and concise.
+- Return JSON only.
+- Do not use markdown.
+- Do not use ```json.
 
 STUDY MATERIAL:
 
-{study_material}
+{combined_text}
 """
 
 
@@ -1946,48 +933,36 @@ STUDY MATERIAL:
                         "Creating flashcards..."
                     ):
 
-                        result = call_ai(
-                            prompt
+                        response = client.responses.create(
+                            model="gpt-5.6-luna",
+                            input=prompt
                         )
 
 
-                    cards = (
-                        parse_json_response(
-                            result
-                        )
-                    )
+                    try:
 
-
-                    if (
-                        isinstance(
-                            cards,
-                            list
-                        )
-                        and cards
-                    ):
-
-                        st.session_state.flashcards = (
-                            cards
+                        flashcard_data = json.loads(
+                            response.output_text
                         )
 
+                        st.session_state.flashcards = flashcard_data
                         st.session_state.flashcard_index = 0
-
                         st.session_state.show_flashcard_answer = False
 
                         st.rerun()
 
 
-                    else:
+                    except json.JSONDecodeError:
 
                         st.error(
-                            "The flashcards could not be "
-                            "formatted correctly. Try again."
+                            "The flashcards couldn't be "
+                            "created correctly. Try again."
                         )
 
 
             else:
 
-                cards = (
+                total_cards = len(
                     st.session_state.flashcards
                 )
 
@@ -1995,47 +970,37 @@ STUDY MATERIAL:
                     st.session_state.flashcard_index
                 )
 
-                card = cards[
-                    card_index
-                ]
+                current_card = (
+                    st.session_state.flashcards[
+                        card_index
+                    ]
+                )
 
 
                 st.write(
                     f"### Card {card_index + 1} "
-                    f"of {len(cards)}"
+                    f"of {total_cards}"
                 )
 
 
                 st.progress(
-                    (
-                        card_index + 1
-                    )
-                    / len(cards)
+                    (card_index + 1)
+                    / total_cards
                 )
 
 
-                st.markdown(
-                    "---"
-                )
-
+                st.markdown("---")
 
                 st.markdown(
                     "### ❓ Question"
                 )
 
-
-                st.markdown(
-                    card.get(
-                        "question",
-                        ""
-                    )
+                st.write(
+                    current_card["question"]
                 )
 
 
-                if (
-                    not
-                    st.session_state.show_flashcard_answer
-                ):
+                if not st.session_state.show_flashcard_answer:
 
                     if st.button(
                         "👀 Reveal Answer",
@@ -2053,67 +1018,46 @@ STUDY MATERIAL:
                         "### ✅ Answer"
                     )
 
-
                     st.success(
-                        card.get(
-                            "answer",
-                            ""
-                        )
+                        current_card["answer"]
                     )
 
 
-                st.markdown(
-                    "---"
-                )
+                st.markdown("---")
 
 
-                previous_col, next_col = (
-                    st.columns(2)
-                )
+                left_col, right_col = st.columns(2)
 
 
-                with previous_col:
+                with left_col:
 
                     if st.button(
                         "⬅️ Previous",
-                        disabled=(
-                            card_index == 0
-                        ),
+                        disabled=(card_index == 0),
                         use_container_width=True
                     ):
 
                         st.session_state.flashcard_index -= 1
-
                         st.session_state.show_flashcard_answer = False
 
                         st.rerun()
 
 
-                with next_col:
+                with right_col:
 
                     if st.button(
                         "Next ➡️",
                         disabled=(
                             card_index
-                            == len(cards) - 1
+                            == total_cards - 1
                         ),
                         use_container_width=True
                     ):
 
                         st.session_state.flashcard_index += 1
-
                         st.session_state.show_flashcard_answer = False
 
                         st.rerun()
-
-
-                st.download_button(
-                    "⬇️ Download Flashcards",
-                    data=build_flashcard_download(),
-                    file_name="study_flashcards.txt",
-                    mime="text/plain",
-                    use_container_width=True
-                )
 
 
                 if st.button(
@@ -2122,403 +1066,14 @@ STUDY MATERIAL:
                 ):
 
                     st.session_state.flashcards = []
-
                     st.session_state.flashcard_index = 0
-
                     st.session_state.show_flashcard_answer = False
 
                     st.rerun()
 
 
-        # =================================================
-        # REVIEW MISTAKES
-        # =================================================
-
-        with mistakes_tab:
-
-            st.subheader(
-                "❌ Review Your Mistakes"
-            )
-
-
-            if (
-                not st.session_state.mistakes
-            ):
-
-                st.success(
-                    "No mistakes to review yet. 🎉"
-                )
-
-
-            else:
-
-                st.write(
-                    "These are questions you answered "
-                    "incorrectly."
-                )
-
-
-                for index, mistake in enumerate(
-                    reversed(
-                        st.session_state.mistakes
-                    )
-                ):
-
-                    real_index = (
-                        len(
-                            st.session_state.mistakes
-                        )
-                        - 1
-                        - index
-                    )
-
-
-                    with st.expander(
-                        f"❌ "
-                        f"{mistake.get('topic', 'Review Topic')}"
-                    ):
-
-                        st.write(
-                            "**Question:**"
-                        )
-
-                        st.write(
-                            mistake.get(
-                                "question",
-                                ""
-                            )
-                        )
-
-
-                        st.write(
-                            "**Your answer:** "
-                            f"{mistake.get('your_answer', '')}"
-                        )
-
-
-                        st.write(
-                            "**Correct answer:** "
-                            f"{mistake.get('correct_answer', '')}"
-                        )
-
-
-                        st.info(
-                            mistake.get(
-                                "explanation",
-                                ""
-                            )
-                        )
-
-
-                        if st.button(
-                            "🧠 Explain This Concept",
-                            key=f"explain_mistake_{real_index}"
-                        ):
-
-                            prompt = f"""
-You are an AI Tutor.
-
-A student got this question wrong.
-
-TOPIC:
-{mistake.get("topic", "")}
-
-QUESTION:
-{mistake.get("question", "")}
-
-STUDENT ANSWER:
-{mistake.get("your_answer", "")}
-
-CORRECT ANSWER:
-{mistake.get("correct_answer", "")}
-
-Explain why the correct answer is right
-and teach the underlying concept in
-beginner-friendly language.
-
-Include a simple example if useful.
-"""
-
-
-                            with st.spinner(
-                                "Explaining..."
-                            ):
-
-                                explanation = (
-                                    call_ai(
-                                        prompt
-                                    )
-                                )
-
-
-                            if explanation:
-
-                                st.session_state.mistake_explanations[
-                                    real_index
-                                ] = explanation
-
-
-                        if (
-                            real_index
-                            in st.session_state.mistake_explanations
-                        ):
-
-                            st.markdown(
-                                st.session_state.mistake_explanations[
-                                    real_index
-                                ]
-                            )
-
-
-                if st.button(
-                    "🗑️ Clear Mistake History",
-                    use_container_width=True
-                ):
-
-                    st.session_state.mistakes = []
-
-                    st.session_state.mistake_explanations = {}
-
-                    st.rerun()
-
-
     else:
 
         st.info(
-            "👆 Upload one or more PDFs to begin studying."
+            "Upload a PDF to use document study mode."
         )
-
-
-        st.markdown(
-            """
-            ### What you can upload
-
-            Lecture slides, class notes, textbook chapters,
-            study guides, assignments, or other PDF material
-            can be studied together.
-            """
-        )
-
-
-# =========================================================
-# PROGRESS DASHBOARD
-# =========================================================
-
-with progress_tab:
-
-    st.header(
-        "📊 Study Progress"
-    )
-
-
-    total = (
-        st.session_state.total_questions
-    )
-
-    correct = (
-        st.session_state.correct_answers
-    )
-
-    incorrect = (
-        total - correct
-    )
-
-
-    if total > 0:
-
-        accuracy = round(
-            (correct / total) * 100
-        )
-
-    else:
-
-        accuracy = 0
-
-
-    col1, col2, col3, col4 = (
-        st.columns(4)
-    )
-
-
-    with col1:
-
-        st.metric(
-            "Quizzes",
-            st.session_state.total_quizzes
-        )
-
-
-    with col2:
-
-        st.metric(
-            "Questions",
-            total
-        )
-
-
-    with col3:
-
-        st.metric(
-            "Correct",
-            correct
-        )
-
-
-    with col4:
-
-        st.metric(
-            "Accuracy",
-            f"{accuracy}%"
-        )
-
-
-    st.divider()
-
-
-    if total > 0:
-
-        st.subheader(
-            "Overall Accuracy"
-        )
-
-        st.progress(
-            correct / total
-        )
-
-
-        st.write(
-            f"✅ Correct: {correct}"
-        )
-
-        st.write(
-            f"❌ Incorrect: {incorrect}"
-        )
-
-
-    else:
-
-        st.info(
-            "Complete a quiz to start tracking "
-            "your progress."
-        )
-
-
-    if (
-        st.session_state.mistakes
-    ):
-
-        st.divider()
-
-        st.subheader(
-            "Topics Needing Review"
-        )
-
-
-        topic_counts = {}
-
-
-        for mistake in (
-            st.session_state.mistakes
-        ):
-
-            topic = mistake.get(
-                "topic",
-                "Unknown Topic"
-            )
-
-
-            topic_counts[topic] = (
-                topic_counts.get(
-                    topic,
-                    0
-                )
-                + 1
-            )
-
-
-        sorted_topics = sorted(
-            topic_counts.items(),
-            key=lambda item: item[1],
-            reverse=True
-        )
-
-
-        for topic, count in (
-            sorted_topics
-        ):
-
-            st.write(
-                f"🔸 {topic} — "
-                f"{count} mistake(s)"
-            )
-
-
-# =========================================================
-# ABOUT PAGE
-# =========================================================
-
-with about_tab:
-
-    st.header(
-        "ℹ️ About AI Study Assistant"
-    )
-
-
-    st.write(
-        """
-        AI Study Assistant is an AI-powered learning
-        application built to help students understand
-        course material more efficiently.
-        """
-    )
-
-
-    st.subheader(
-        "✨ Features"
-    )
-
-
-    st.markdown(
-        """
-        - 💬 General AI tutoring
-        - 📚 Multiple PDF study
-        - 🔎 Retrieval-Augmented Generation (RAG)
-        - 📍 PDF filename and page citations
-        - 📝 AI summaries
-        - ❓ Interactive quizzes
-        - 🗂️ Interactive flashcards
-        - 🎚️ Difficulty settings
-        - 🧠 Multiple explanation styles
-        - 📊 Progress tracking
-        - ❌ Mistake review
-        - 💾 Downloadable study material
-        """
-    )
-
-
-    st.subheader(
-        "🛠️ Technology"
-    )
-
-
-    st.write(
-        """
-        Python • Streamlit • OpenAI API •
-        Embeddings • RAG • PyPDF •
-        Session State
-        """
-    )
-
-
-    st.subheader(
-        "🛡️ Privacy"
-    )
-
-
-    st.write(
-        """
-        API keys are stored outside the source code
-        using environment variables or deployment
-        secrets.
-        """
-    )
